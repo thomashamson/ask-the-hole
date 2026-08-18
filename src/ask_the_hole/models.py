@@ -207,34 +207,11 @@ class Location(AgsRow):
         alias="LOCA_STAR",
         description="Date the location was started.",
     )
-    end_date: date | None = Field(
-        default=None,
-        alias="LOCA_ENDD",
-        description="Date the location was completed.",
-    )
     remarks: str | None = Field(
         default=None,
         alias="LOCA_REM",
         description="General remarks recorded against the location.",
     )
-
-    @model_validator(mode="after")
-    def _flag_reversed_dates(self, info: ValidationInfo) -> Self:
-        """Cross-field check, run once every individual field has validated.
-
-        A field_validator only ever sees one value, so ordering between two
-        dates has to happen here. This records rather than raises, because by
-        contract only a broken identity may discard a row.
-        """
-        if self.start_date and self.end_date and self.end_date < self.start_date:
-            record_warning(
-                info.context,
-                loca_id=self.loca_id,
-                heading="LOCA_ENDD",
-                value=str(self.end_date),
-                message=f"end date is before start date {self.start_date}",
-            )
-        return self
 
 
 class Stratum(LocatedRow):

@@ -51,7 +51,7 @@ _NUMERIC_FIELDS = frozenset(
 # Ceiling for the free-text column, so it cannot crowd out everything else.
 _FLEXIBLE_MAX_WIDTH = 44
 # Fields whose rendered values are wider than their AGS heading.
-_MIN_CONTENT_WIDTH = {"start_date": 10, "end_date": 10}
+_MIN_CONTENT_WIDTH = {"start_date": 10}
 
 
 @app.callback()
