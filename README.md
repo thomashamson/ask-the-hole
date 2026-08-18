@@ -8,8 +8,8 @@ data file, using a local LLM with tool-calling. Runs fully offline.
 Parses all five groups — `PROJ`, `LOCA`, `GEOL`, `SAMP`, `ISPT` — into
 validated Pydantic models and prints them, decoding coded values through the
 file's own `ABBR` group and classifying strata as rock or soil from the standard
-`GEOL_LEG` bands, with a deterministic query layer over the result.
-No LLM, no agent loop yet.
+`GEOL_LEG` bands, with a deterministic query layer over the result, and
+answers natural-language questions through a local model with tool-calling.
 
 ## Requirements
 
@@ -35,7 +35,13 @@ uv run ask-the-hole spt       path/to/file.ags   # ISPT
 uv run ask-the-hole find     path/to/file.ags --material rock --above 5
 uv run ask-the-hole describe path/to/file.ags BH01
 uv run ask-the-hole spt-results path/to/file.ags --min-n 30
+
+uv run ask-the-hole ask path/to/file.ags "which locations hit rock above 5m?"
+uv run ask-the-hole ask path/to/file.ags "..." --model llama3.2:3b --show-steps
 ```
+
+Requires a running local Ollama with `qwen2.5:7b` pulled. Nothing leaves the
+machine: the only socket opened is to localhost.
 
 ## Layout
 
@@ -123,6 +129,34 @@ its depths are known, its levels are unknowable.
 measures mOD. `above` and `below` name a **physical direction**, so the numeric
 comparison flips between them: above 5m depth is a *smaller* number, above 5mOD
 is a *larger* one. Bounds are exclusive.
+
+## The agent loop
+
+`tools.py` exposes five narrow tools over the query layer. Their argument
+models are Pydantic, which does two jobs at once: `model_json_schema()`
+produces the schema the model sees, and `model_validate()` checks what it sends
+back. A hallucinated argument is refused by the same machinery that refuses
+`"N/A"` in a 2DP column, and the error is fed back so the model can retry.
+
+### Caveats the model cannot drop
+
+Summarising three buckets into a sentence is exactly where a small model loses
+the awkward third one, so that is not left to it. Tool results carry
+machine-readable `caveats` that the loop appends to the final answer regardless
+of what the model said.
+
+Two further checks the model cannot talk its way past:
+
+- **No tools called** — every question here is about the file, so an answer
+  produced without consulting it is flagged as ungrounded.
+- **Numeric grounding** — measured values in the answer are compared against
+  every figure the tools actually returned. Only *measurements* are checked
+  (decimals, figures with units, N values); bare integers are ignored, because
+  counts and totals are derived legitimately and would bury the signal.
+
+The grounding check is a heuristic and is allowed to be wrong. It adds a caveat
+rather than suppressing the answer, and how often it fires — including how
+often it fires spuriously — is itself a way to compare models.
 
 ## Test fixtures
 

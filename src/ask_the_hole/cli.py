@@ -9,6 +9,7 @@ from rich import box
 from rich.console import Console
 from rich.table import Table
 
+from ask_the_hole.agent import DEFAULT_MAX_STEPS, DEFAULT_MODEL, AgentError, answer_question
 from ask_the_hole.dataset import Dataset, load_dataset
 from ask_the_hole.legend import Material
 from ask_the_hole.models import AgsRow, FieldWarning, InSituTest, Location, Sample, Stratum
@@ -203,6 +204,46 @@ def summary(ags_file: AgsFileArgument) -> None:
 
     console.print(table)
     _report(data.warnings, data.errors)
+
+
+@app.command()
+def ask(
+    ags_file: AgsFileArgument,
+    question: Annotated[str, typer.Argument(help="A question about the file, in plain English.")],
+    model: Annotated[str, typer.Option(help="Ollama model to use.")] = DEFAULT_MODEL,
+    max_steps: Annotated[
+        int, typer.Option(help="Maximum tool-calling rounds.")
+    ] = DEFAULT_MAX_STEPS,
+    show_steps: Annotated[bool, typer.Option("--show-steps", help="Print each tool call.")] = False,
+) -> None:
+    """Ask a natural-language question about AGS_FILE using a local model."""
+    data = _load(ags_file)
+
+    try:
+        answer = answer_question(data, question, model=model, max_steps=max_steps)
+    except AgentError as exc:
+        errors_console.print(f"[bold red]Error:[/bold red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    if show_steps:
+        for record in answer.steps:
+            arguments = ", ".join(f"{k}={v!r}" for k, v in record.arguments.items())
+            console.print(f"[dim]  {record.step}. {record.name}({arguments})[/dim]")
+        if answer.steps:
+            console.print()
+
+    console.print(answer.text or "[dim]The model returned no answer.[/dim]")
+
+    # Printed by us, not by the model. These are the limitations the tools
+    # reported, and they survive whatever the model chose to leave out.
+    if answer.caveats:
+        console.print()
+        console.print("[bold yellow]Caveats (added automatically):[/bold yellow]")
+        for caveat in answer.caveats:
+            console.print(f"  [yellow]-[/yellow] {caveat}")
+
+    console.print()
+    console.print(f"[dim]{answer.model} - {len(answer.steps)} tool call(s)[/dim]")
 
 
 @app.command()
