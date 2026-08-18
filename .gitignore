@@ -6,4 +6,9 @@ __pycache__/
 dist/
 build/
 *.egg-info/
-data/*.ags
+# Real AGS files are never committed. This repo is intended to go public,
+# and git history is permanent: a client export committed once stays in the
+# history even if deleted later. Deny every .ags by default and allow back
+# only the synthetic, hand-authored fixtures.
+*.ags
+!tests/fixtures/*.ags
