@@ -184,7 +184,7 @@ emitting them, so the loop sees a final answer and stops.
 
 ```
 parser.py       reading AGS files, plus everything true of every group
-  locations.py  project.py  geology.py  samples.py  spt.py  abbreviations.py
+locations.py  project.py  geology.py  samples.py  spt.py  abbreviations.py
 dataset.py      one file, parsed across all five groups
 legend.py       GEOL_LEG bands to rock / soil / unknown
 queries.py      deterministic questions, three-bucket answers
