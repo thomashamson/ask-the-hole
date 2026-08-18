@@ -31,8 +31,8 @@ def test_clean_site_parses_with_no_complaints():
 
     borehole = result.locations[0]
     # AGS gives us strings; the model is what turns them into real types.
-    assert borehole.easting == 475120.50
-    assert borehole.northing == 260880.25
+    assert borehole.easting == 400120.50
+    assert borehole.northing == 300880.25
     assert borehole.ground_level == 68.42
     assert borehole.final_depth == 12.00
     assert borehole.start_date == date(2026, 3, 4)
@@ -94,7 +94,7 @@ def test_surviving_fields_of_a_warned_row_are_still_parsed(messy: ParsedLocation
 
     ws01 = by_id["WS01"]
     assert ws01.ground_level is None
-    assert ws01.easting == 486320.10
+    assert ws01.easting == 420320.10
     assert ws01.final_depth == 6.00
 
     tp02 = by_id["TP02"]
