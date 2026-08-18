@@ -5,8 +5,9 @@ data file, using a local LLM with tool-calling. Runs fully offline.
 
 ## Status
 
-Early. Currently parses the `LOCA` group into validated Pydantic models and
-prints them. No LLM, no agent loop yet.
+Early. Parses the `LOCA` and `GEOL` groups into validated Pydantic models and
+prints them, decoding coded values through the file's own `ABBR` group.
+No LLM, no agent loop yet.
 
 ## Requirements
 
@@ -22,8 +23,21 @@ uv sync
 ## Usage
 
 ```
-uv run ask-the-hole locations path/to/file.ags
+uv run ask-the-hole locations path/to/file.ags   # LOCA: one row per hole
+uv run ask-the-hole strata    path/to/file.ags   # GEOL: one row per layer
 ```
+
+## Layout
+
+`parser.py` reads AGS files and holds everything true of every group. One
+module per group builds on it — `locations.py`, `geology.py` — so `SAMP` and
+`ISPT` slot in the same way. `models.py` holds the Pydantic row models, which
+share validation behaviour through an `AgsRow` base and differ only in their
+fields and their declared `identity_fields`.
+
+Strata are a flat list mirroring the `GEOL` group row-for-row, indexed by hole
+via `ParsedGeology.for_location()`, rather than nested inside `Location`. That
+keeps every model a faithful image of the file it came from.
 
 ## How bad data is handled
 
@@ -32,7 +46,7 @@ Three severities, kept deliberately distinct:
 | Severity          | Cause                                              | Effect                         |
 | ----------------- | -------------------------------------------------- | ------------------------------ |
 | **File error**    | Unreadable file, no LOCA group, no LOCA_ID heading   | Raises; nothing is returned    |
-| **Row error**     | Missing or duplicate `LOCA_ID`                       | That row is discarded          |
+| **Row error**     | Broken identity — missing/duplicate `LOCA_ID`, or a stratum with no `GEOL_TOP`; also a `GEOL` row referencing a hole that does not exist | That row is discarded |
 | **Field warning** | Type violation, e.g. `"N/A"` in a 2DP column         | That value becomes `None`      |
 
 An *empty* AGS field is not a problem. AGS has no NULL, so `""` is the correct
@@ -45,6 +59,15 @@ The group's `UNIT` row is captured onto the parse result, keyed by AGS heading,
 and shown beneath each column header. This is not cosmetic: `LOCA_GL` is a
 *level* relative to a datum and `LOCA_FDEP` is a *depth below* it. The numbers
 alone do not say which is which — only the `UNIT` row does.
+
+## Coded values
+
+`GEOL_GEOL` codes are decoded through the file's own `ABBR` group. `ABBR` is
+file-supplied and only as good as whoever wrote it, so a code with no entry
+falls back to the raw code and is reported — once per distinct code, not once
+per row. There is deliberately **no built-in geology dictionary** as a backstop:
+guessing would make the tool quietly wrong on an unfamiliar file, which is worse
+than saying it does not know.
 
 ## Test fixtures
 

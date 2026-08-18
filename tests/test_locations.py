@@ -1,23 +1,15 @@
-"""Tests for AGS LOCA parsing."""
+"""Tests for parsing the AGS LOCA group."""
 
 from datetime import date
-from pathlib import Path
 
-import pandas as pd
 import pytest
 
-from ask_the_hole.parser import ParsedLocations, parse_locations, read_ags_tables
-
-FIXTURES = Path(__file__).parent / "fixtures"
+from ask_the_hole.locations import ParsedLocations, parse_locations
+from tests.helpers import group_frame, tables
 
 
 def load(name: str) -> ParsedLocations:
-    return parse_locations(read_ags_tables(FIXTURES / f"{name}.ags"))
-
-
-def loca_frame(rows: list[dict[str, str]]) -> pd.DataFrame:
-    """Build a LOCA frame shaped the way python-ags4 hands one back."""
-    return pd.DataFrame([{"HEADING": "DATA", **row} for row in rows])
+    return parse_locations(tables(name))
 
 
 @pytest.fixture(scope="module")
@@ -52,11 +44,7 @@ def test_sparse_site_parses_with_no_complaints():
 
     assert result.errors == []
     assert result.warnings == []
-    assert [location.loca_id for location in result.locations] == [
-        "TP101",
-        "TP102",
-        "TP103",
-    ]
+    assert result.ids == {"TP101", "TP102", "TP103"}
 
 
 def test_messy_export_keeps_every_location(messy: ParsedLocations):
@@ -117,7 +105,7 @@ def test_surviving_fields_of_a_warned_row_are_still_parsed(messy: ParsedLocation
 def test_duplicate_loca_id_discards_the_later_row():
     result = parse_locations(
         {
-            "LOCA": loca_frame(
+            "LOCA": group_frame(
                 [
                     {"LOCA_ID": "BH01", "LOCA_GL": "10.00"},
                     {"LOCA_ID": "BH01", "LOCA_GL": "20.00"},
@@ -133,7 +121,7 @@ def test_duplicate_loca_id_discards_the_later_row():
 
 
 def test_missing_loca_id_discards_the_row():
-    result = parse_locations({"LOCA": loca_frame([{"LOCA_ID": "", "LOCA_GL": "10.00"}])})
+    result = parse_locations({"LOCA": group_frame([{"LOCA_ID": "", "LOCA_GL": "10.00"}])})
 
     assert result.locations == []
     assert len(result.errors) == 1
@@ -152,7 +140,7 @@ def test_unit_row_is_captured_per_heading():
 
 
 def test_missing_unit_row_is_not_an_error():
-    result = parse_locations({"LOCA": loca_frame([{"LOCA_ID": "BH01"}])})
+    result = parse_locations({"LOCA": group_frame([{"LOCA_ID": "BH01"}])})
 
     assert result.units == {}
-    assert [location.loca_id for location in result.locations] == ["BH01"]
+    assert result.ids == {"BH01"}

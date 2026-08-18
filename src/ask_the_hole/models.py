@@ -2,20 +2,24 @@
 
 Field names are Python-idiomatic. Each carries an ``alias`` naming the AGS
 heading it comes from, so a model can be built directly from a raw AGS row
-without a hand-written mapping layer.
+without a hand-written mapping layer. All user-facing output quotes the AGS
+heading rather than the Python name.
 
 Real AGS exports contain values that violate the type declared in the file's
-own TYPE row - "N/A" in a 2DP column, "-" where a coordinate should be. The
-models here treat that as a *field* problem, not a *row* problem: the offending
-value becomes None and a FieldWarning is recorded, but the location survives.
-Only a broken identity (LOCA_ID) discards a row, because a location we cannot
-name is a location we cannot answer questions about.
+own TYPE row - "N/A" in a 2DP column, "-" where a coordinate should be. These
+models treat that as a *field* problem, not a *row* problem: the offending
+value becomes None and a FieldWarning is recorded, but the row survives. Only a
+broken *identity* discards a row, because a row we cannot name or place is a
+row we cannot answer questions about.
+
+Each model declares its own identity via ``identity_fields``, mirroring the key
+fields AGS defines for that group.
 """
 
 from __future__ import annotations
 
 from datetime import date
-from typing import Any, Self
+from typing import Any, ClassVar, Self
 
 from pydantic import (
     BaseModel,
@@ -42,11 +46,11 @@ class FieldWarning(BaseModel):
     message: str
 
 
-class Location(BaseModel):
-    """One row of the AGS ``LOCA`` group: a single exploratory hole.
+class AgsRow(BaseModel):
+    """Shared behaviour for one row of any AGS group.
 
-    Only a core subset of the ~35 AGS4 ``LOCA`` headings is modelled. Anything
-    else present in the file is dropped by the parser.
+    Subclasses supply the fields and name their identity. Everything here is
+    about *how* a row is validated, not *what* is in one.
     """
 
     model_config = ConfigDict(
@@ -61,9 +65,94 @@ class Location(BaseModel):
         # an unexpected key here means a bug in our code, not messy input.
         extra="forbid",
         # Parsed rows are a read-only view of the file. Immutability also makes
-        # Location hashable, so locations can go in sets.
+        # rows hashable, so they can go in sets.
         frozen=True,
     )
+
+    # ClassVar is not a field. Pydantic deliberately skips ClassVar-annotated
+    # attributes when building the model, so this is configuration attached to
+    # the class rather than data attached to each row.
+    identity_fields: ClassVar[frozenset[str]] = frozenset()
+
+    @field_validator("*", mode="wrap")
+    @classmethod
+    def _tolerate_unusable_values(
+        cls,
+        value: Any,
+        handler: ValidatorFunctionWrapHandler,
+        info: ValidationInfo,
+    ) -> Any:
+        """Degrade an unusable field to None instead of failing the whole row.
+
+        A "wrap" validator sits *around* Pydantic's own validation: ``handler``
+        is the normal machinery, and we choose whether to call it and what to do
+        when it complains. That is what lets us catch a type failure and
+        substitute None. A "before" validator could not, because it runs before
+        Pydantic has judged the value; an "after" validator could not either,
+        because it never runs once validation has already failed.
+
+        Three cases, matching how AGS files actually behave:
+
+        * an identity field - no leniency. We call the handler directly and let
+          a bad value propagate, discarding the row.
+        * ``""`` - a legitimately absent value. Silently None, no warning. AGS
+          has no NULL, so an empty field is the correct way to record "not
+          recorded" and is not a data quality problem.
+        * anything else that fails - a real type violation, such as "N/A" in a
+          2DP column. None, plus a FieldWarning so the user learns their file
+          contains it.
+        """
+        if info.field_name in cls.identity_fields:
+            return handler(value)
+
+        if isinstance(value, str) and not value.strip():
+            return None
+
+        try:
+            return handler(value)
+        except ValidationError as exc:
+            record_warning(
+                info.context,
+                # info.data holds the fields validated so far. loca_id is
+                # declared first in every group, so it is already available.
+                loca_id=info.data.get("loca_id"),
+                heading=cls.heading_for(info.field_name),
+                value=value,
+                message=exc.errors()[0]["msg"],
+            )
+            return None
+
+    @classmethod
+    def heading_for(cls, field_name: str) -> str:
+        """Map a Python field name back to the AGS heading it came from.
+
+        Output quotes the AGS heading rather than our field name, so the user
+        can find the offending column in their own file.
+        """
+        field = cls.model_fields.get(field_name)
+        if field is not None and field.alias:
+            return field.alias
+        return field_name
+
+    @classmethod
+    def headings(cls) -> tuple[str, ...]:
+        """Every AGS heading this model reads, in declaration order.
+
+        Derived from the model rather than repeated in the parser, so the set of
+        headings we keep can never drift out of step with the fields we parse.
+        """
+        return tuple(cls.heading_for(name) for name in cls.model_fields)
+
+
+class Location(AgsRow):
+    """One row of the AGS ``LOCA`` group: a single exploratory hole.
+
+    Only a core subset of the ~35 AGS4 ``LOCA`` headings is modelled. Anything
+    else present in the file is dropped by the parser.
+    """
+
+    # AGS keys LOCA on LOCA_ID alone.
+    identity_fields: ClassVar[frozenset[str]] = frozenset({"loca_id"})
 
     loca_id: str = Field(
         alias="LOCA_ID",
@@ -117,64 +206,16 @@ class Location(BaseModel):
         description="General remarks recorded against the location.",
     )
 
-    @field_validator("*", mode="wrap")
-    @classmethod
-    def _tolerate_unusable_values(
-        cls,
-        value: Any,
-        handler: ValidatorFunctionWrapHandler,
-        info: ValidationInfo,
-    ) -> Any:
-        """Degrade an unusable field to None instead of failing the whole row.
-
-        A "wrap" validator sits *around* Pydantic's own validation: ``handler``
-        is the normal machinery, and we choose whether to call it and what to do
-        when it complains. That is what lets us catch a type failure and
-        substitute None. A "before" validator could not, because it runs before
-        Pydantic has judged the value; an "after" validator could not either,
-        because it never runs once validation has already failed.
-
-        Three cases, matching how AGS files actually behave:
-
-        * ``loca_id`` - no leniency. Identity is load-bearing, so we call the
-          handler directly and let a bad value propagate and discard the row.
-        * ``""`` - a legitimately absent value. Silently None, no warning. AGS
-          has no NULL, so an empty field is the correct way to record "not
-          recorded" and is not a data quality problem.
-        * anything else that fails - a real type violation, such as "N/A" in a
-          2DP column. None, plus a FieldWarning so the user learns their file
-          contains it.
-        """
-        if info.field_name == "loca_id":
-            return handler(value)
-
-        if isinstance(value, str) and not value.strip():
-            return None
-
-        try:
-            return handler(value)
-        except ValidationError as exc:
-            _warn(
-                info.context,
-                # info.data holds the fields validated so far. loca_id is
-                # declared first, so it is already available to name this row.
-                loca_id=info.data.get("loca_id"),
-                heading=cls.heading_for(info.field_name),
-                value=value,
-                message=exc.errors()[0]["msg"],
-            )
-            return None
-
     @model_validator(mode="after")
     def _flag_reversed_dates(self, info: ValidationInfo) -> Self:
         """Cross-field check, run once every individual field has validated.
 
         A field_validator only ever sees one value, so ordering between two
         dates has to happen here. This records rather than raises, because by
-        contract only a broken LOCA_ID may discard a row.
+        contract only a broken identity may discard a row.
         """
         if self.start_date and self.end_date and self.end_date < self.start_date:
-            _warn(
+            record_warning(
                 info.context,
                 loca_id=self.loca_id,
                 heading="LOCA_ENDD",
@@ -183,20 +224,79 @@ class Location(BaseModel):
             )
         return self
 
-    @classmethod
-    def heading_for(cls, field_name: str) -> str:
-        """Map a Python field name back to the AGS heading it came from.
 
-        Warnings quote the AGS heading rather than our field name, so the user
-        can find the offending column in their own file.
-        """
-        field = cls.model_fields.get(field_name)
-        if field is not None and field.alias:
-            return field.alias
-        return field_name
+class Stratum(AgsRow):
+    """One row of the AGS ``GEOL`` group: a single geological layer in a hole.
+
+    ``top`` and ``base`` are depths *below ground level*, not levels relative to
+    a datum. Converting one to the other needs the hole's LOCA_GL, which is why
+    the UNIT row is captured and why a hole with an unusable ground level can
+    report depths but not levels.
+    """
+
+    # AGS keys GEOL on LOCA_ID plus GEOL_TOP: a layer is identified by the hole
+    # it is in and where it starts. A stratum with neither cannot be placed.
+    identity_fields: ClassVar[frozenset[str]] = frozenset({"loca_id", "top"})
+
+    loca_id: str = Field(
+        alias="LOCA_ID",
+        min_length=1,
+        description="Identifier of the location this layer was logged in.",
+    )
+    top: float = Field(
+        alias="GEOL_TOP",
+        ge=0,
+        description="Depth to the top of the layer, below ground level, in metres.",
+    )
+    base: float | None = Field(
+        default=None,
+        alias="GEOL_BASE",
+        ge=0,
+        description="Depth to the base of the layer, below ground level, in metres.",
+    )
+    description: str | None = Field(
+        default=None,
+        alias="GEOL_DESC",
+        description="Free-text engineering description of the stratum.",
+    )
+    legend: str | None = Field(
+        default=None,
+        alias="GEOL_LEG",
+        description="Legend code for the stratum.",
+    )
+    geology_code: str | None = Field(
+        default=None,
+        alias="GEOL_GEOL",
+        description="Geology code for the stratum, decoded via the file's ABBR group.",
+    )
+    status: str | None = Field(
+        default=None,
+        alias="GEOL_STAT",
+        description="Status of the layer's data, e.g. FINAL.",
+    )
+
+    @property
+    def thickness(self) -> float | None:
+        """Layer thickness in metres, or None when the base was not recorded."""
+        if self.base is None:
+            return None
+        return self.base - self.top
+
+    @model_validator(mode="after")
+    def _flag_inverted_interval(self, info: ValidationInfo) -> Self:
+        """A base shallower than its top means the interval is unusable."""
+        if self.base is not None and self.base < self.top:
+            record_warning(
+                info.context,
+                loca_id=self.loca_id,
+                heading="GEOL_BASE",
+                value=str(self.base),
+                message=f"base is above top {self.top}",
+            )
+        return self
 
 
-def _warn(
+def record_warning(
     context: Any,
     *,
     loca_id: str | None,
@@ -210,7 +310,7 @@ def _warn(
     visible to every validator as ``info.context``. It is the supported way to
     get information *out* of validation without bolting a mutable field onto an
     otherwise frozen model. If no context list was supplied, warnings are simply
-    dropped, so Location stays usable on its own.
+    dropped, so the models stay usable on their own.
     """
     if isinstance(context, list):
         context.append(
