@@ -38,6 +38,8 @@ uv run ask-the-hole spt-results path/to/file.ags --min-n 30
 
 uv run ask-the-hole ask path/to/file.ags "which locations hit rock above 5m?"
 uv run ask-the-hole ask path/to/file.ags "..." --model llama3.2:3b --show-steps
+
+uv run ask-the-hole evaluate --model qwen2.5:7b --model llama3.2:3b
 ```
 
 Requires a running local Ollama with `qwen2.5:7b` pulled. Nothing leaves the
@@ -157,6 +159,28 @@ Two further checks the model cannot talk its way past:
 The grounding check is a heuristic and is allowed to be wrong. It adds a caveat
 rather than suppressing the answer, and how often it fires — including how
 often it fires spuriously — is itself a way to compare models.
+
+## Evaluating a model
+
+`evaluate` runs a fixed set of twelve questions against one or more local
+models, at `temperature=0` so the same question gives the same answer. Four
+single-tool lookups, four multi-step chains, and four whose honest answer is a
+refusal or a caveat.
+
+The third category is the point. A model that handles the first eight and then
+confidently invents an answer to the last four is *worse* than one that
+refuses, because a fabrication citing a real depth reads exactly like a
+citation.
+
+Grading is mechanical substring matching against facts verified from the
+fixtures, so it is a proxy and not a judge — a correct answer phrased
+unexpectedly scores as a failure, and a wrong answer containing the right
+substring scores as a pass. The pass rate is therefore a coarse signal.
+
+The number worth quoting is **how often the grounding check fires**, since that
+catches fabricated measurements regardless of phrasing — reported alongside how
+many flagged answers were otherwise graded correct, which is the honest upper
+bound on spurious flags.
 
 ## Test fixtures
 

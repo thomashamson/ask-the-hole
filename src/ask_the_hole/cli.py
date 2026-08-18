@@ -1,5 +1,6 @@
 """Command-line entry point for Ask the Hole."""
 
+import json
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Annotated, Any
@@ -11,6 +12,7 @@ from rich.table import Table
 
 from ask_the_hole.agent import DEFAULT_MAX_STEPS, DEFAULT_MODEL, AgentError, answer_question
 from ask_the_hole.dataset import Dataset, load_dataset
+from ask_the_hole.evaluation import QUESTIONS, ModelReport, run_question
 from ask_the_hole.legend import Material
 from ask_the_hole.models import AgsRow, FieldWarning, InSituTest, Location, Sample, Stratum
 from ask_the_hole.parser import AgsError, RowError
@@ -204,6 +206,92 @@ def summary(ags_file: AgsFileArgument) -> None:
 
     console.print(table)
     _report(data.warnings, data.errors)
+
+
+@app.command()
+def evaluate(
+    models: Annotated[
+        list[str] | None,
+        typer.Option("--model", help="Model to evaluate. Repeat to compare several."),
+    ] = None,
+    fixtures: Annotated[
+        Path,
+        typer.Option(help="Directory holding the .ags fixtures.", exists=True, file_okay=False),
+    ] = Path("tests/fixtures"),
+    json_out: Annotated[
+        Path | None, typer.Option("--json", help="Also write the full results to this file.")
+    ] = None,
+) -> None:
+    """Run the fixed 12-question set against one or more local models.
+
+    Grading is mechanical substring matching, so the pass rate is a coarse
+    signal. The number worth quoting is how often the grounding check fires,
+    alongside how many of those flagged answers were otherwise correct.
+    """
+    chosen = models or [DEFAULT_MODEL]
+    reports: list[ModelReport] = []
+
+    for model in chosen:
+        console.print(f"[bold]{model}[/bold]")
+        outcomes = []
+        for question in QUESTIONS:
+            try:
+                outcome = run_question(question, fixtures, model)
+            except AgentError as exc:
+                errors_console.print(f"[bold red]Error:[/bold red] {exc}")
+                raise typer.Exit(code=1) from exc
+
+            outcomes.append(outcome)
+            mark = "[green]pass[/green]" if outcome.passed else "[red]FAIL[/red]"
+            flag = " [yellow]ungrounded[/yellow]" if outcome.ungrounded else ""
+            console.print(f"  {mark}{flag}  {outcome.question_id}")
+            for failure in outcome.failures:
+                console.print(f"        [dim]{failure}[/dim]")
+
+        reports.append(ModelReport(model=model, outcomes=outcomes))
+        console.print()
+
+    _print_reports(reports)
+
+    if json_out is not None:
+        payload = [report.model_dump() for report in reports]
+        json_out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        console.print(f"[dim]full results written to {json_out}[/dim]")
+
+
+def _print_reports(reports: list[ModelReport]) -> None:
+    table = Table(box=box.SIMPLE_HEAD, pad_edge=False, title="Results", title_justify="left")
+    table.add_column("model", style="bold", no_wrap=True)
+    table.add_column("lookup", justify="right", no_wrap=True)
+    table.add_column("chain", justify="right", no_wrap=True)
+    table.add_column("refusal", justify="right", no_wrap=True)
+    table.add_column("passed", justify="right", no_wrap=True)
+    table.add_column("ungrounded", justify="right", no_wrap=True)
+
+    for report in reports:
+        scores = []
+        for category in ("lookup", "chain", "refusal"):
+            group = report.by_category(category)
+            scores.append(f"{sum(1 for o in group if o.passed)}/{len(group)}")
+        table.add_row(
+            report.model,
+            *scores,
+            f"{report.passed}/{len(report.outcomes)}",
+            str(report.ungrounded),
+        )
+
+    console.print(table)
+
+    for report in reports:
+        if not report.ungrounded:
+            continue
+        flagged = [o.question_id for o in report.outcomes if o.ungrounded]
+        console.print(
+            f"[yellow]{report.model}[/yellow]: grounding check fired on "
+            f"{report.ungrounded} of {len(report.outcomes)} ({', '.join(flagged)}); "
+            f"{report.ungrounded_but_passed} of those were otherwise graded correct, "
+            "which is the upper bound on spurious flags."
+        )
 
 
 @app.command()
