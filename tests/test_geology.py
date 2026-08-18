@@ -172,3 +172,30 @@ def test_geol_unit_row_is_captured():
     assert result.units["GEOL_TOP"] == "m"
     assert result.units["GEOL_BASE"] == "m"
     assert "GEOL_DESC" not in result.units
+
+
+def test_material_is_derived_from_the_legend_band(messy: ParsedGeology):
+    """Chalk (805) is rock; glacial till (201) is not. Nothing in the file says so."""
+    chalk = messy.for_location("BH05")[-1]
+    till = messy.for_location("BH05")[1]
+
+    assert chalk.legend == "805"
+    assert chalk.material == "rock"
+    assert till.legend == "201"
+    assert till.material == "soil"
+
+
+def test_material_is_unknown_without_a_usable_legend():
+    result = parse_geology(
+        {
+            "GEOL": group_frame(
+                [
+                    {"LOCA_ID": "BH01", "GEOL_TOP": "0.00", "GEOL_LEG": ""},
+                    {"LOCA_ID": "BH01", "GEOL_TOP": "1.00", "GEOL_LEG": "999"},
+                ]
+            )
+        },
+        known_ids={"BH01"},
+    )
+
+    assert [stratum.material for stratum in result.strata] == ["unknown", "unknown"]

@@ -5,9 +5,10 @@ data file, using a local LLM with tool-calling. Runs fully offline.
 
 ## Status
 
-Early. Parses the `LOCA` and `GEOL` groups into validated Pydantic models and
-prints them, decoding coded values through the file's own `ABBR` group.
-No LLM, no agent loop yet.
+Parses all five groups — `PROJ`, `LOCA`, `GEOL`, `SAMP`, `ISPT` — into
+validated Pydantic models and prints them, decoding coded values through the
+file's own `ABBR` group and classifying strata as rock or soil from the standard
+`GEOL_LEG` bands. No LLM, no agent loop yet.
 
 ## Requirements
 
@@ -23,21 +24,32 @@ uv sync
 ## Usage
 
 ```
+uv run ask-the-hole summary   path/to/file.ags   # what this file contains
+uv run ask-the-hole project   path/to/file.ags   # PROJ
 uv run ask-the-hole locations path/to/file.ags   # LOCA: one row per hole
 uv run ask-the-hole strata    path/to/file.ags   # GEOL: one row per layer
+uv run ask-the-hole samples   path/to/file.ags   # SAMP
+uv run ask-the-hole spt       path/to/file.ags   # ISPT
 ```
 
 ## Layout
 
-`parser.py` reads AGS files and holds everything true of every group. One
-module per group builds on it — `locations.py`, `geology.py` — so `SAMP` and
-`ISPT` slot in the same way. `models.py` holds the Pydantic row models, which
-share validation behaviour through an `AgsRow` base and differ only in their
-fields and their declared `identity_fields`.
+`parser.py` reads AGS files and holds everything true of every group, including
+`ParsedGroup` — a Pydantic generic shared by the depth-logged groups. One module
+per group builds on it: `project.py`, `locations.py`, `geology.py`, `samples.py`,
+`spt.py`. `dataset.py` loads a whole file across all five.
 
-Strata are a flat list mirroring the `GEOL` group row-for-row, indexed by hole
-via `ParsedGeology.for_location()`, rather than nested inside `Location`. That
-keeps every model a faithful image of the file it came from.
+`models.py` holds the Pydantic row models. They share validation behaviour
+through an `AgsRow` base and differ only in their fields and their declared
+`identity_fields`, which mirror the key fields AGS defines for each group.
+
+Rows are flat lists mirroring their group row-for-row, indexed by hole via
+`for_location()`, rather than nested inside `Location`. That keeps every model a
+faithful image of the file it came from.
+
+Groups are optional. A missing group yields an empty result rather than an
+error, and `Dataset.has()` distinguishes *absent* from *present but empty* —
+which is what lets a question be answered with "that is not in this file".
 
 ## How bad data is handled
 
@@ -68,6 +80,18 @@ falls back to the raw code and is reported — once per distinct code, not once
 per row. There is deliberately **no built-in geology dictionary** as a backstop:
 guessing would make the tool quietly wrong on an unfamiliar file, which is worse
 than saying it does not know.
+
+## Rock or soil
+
+Strata are classified from the numeric `GEOL_LEG` code, which unlike `GEOL_GEOL`
+comes from a fixed standard list banded by material: 101–108 made ground and
+topsoil, 201–231 clay, 301–332 silt, 401–436 sand, 501–528 gravel, 601–614 peat,
+701–731 cobbles and boulders, **801–819 rock**, 996–999 broken ground and voids.
+
+The result has **three** states, not two. 996–999 is neither rock nor soil, and
+so is any absent or non-standard code — `Stratum.material` returns `unknown`
+rather than defaulting. Nothing in a file states that chalk is rock and glacial
+till is not; the band does.
 
 ## Test fixtures
 

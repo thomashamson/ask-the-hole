@@ -32,6 +32,8 @@ from pydantic import (
     model_validator,
 )
 
+from ask_the_hole.legend import Material, classify_legend
+
 
 class FieldWarning(BaseModel):
     """A recorded value that could not be used, and was replaced with None.
@@ -144,6 +146,16 @@ class AgsRow(BaseModel):
         return tuple(cls.heading_for(name) for name in cls.model_fields)
 
 
+class LocatedRow(AgsRow):
+    """A row logged at a depth within a location.
+
+    Subclasses declare ``loca_id`` and ``top`` themselves: their AGS aliases
+    differ per group (GEOL_TOP, SAMP_TOP, ISPT_TOP), so the fields cannot simply
+    be inherited. This base exists to name the contract that lets one container
+    index and depth-sort any of them.
+    """
+
+
 class Location(AgsRow):
     """One row of the AGS ``LOCA`` group: a single exploratory hole.
 
@@ -225,7 +237,7 @@ class Location(AgsRow):
         return self
 
 
-class Stratum(AgsRow):
+class Stratum(LocatedRow):
     """One row of the AGS ``GEOL`` group: a single geological layer in a hole.
 
     ``top`` and ``base`` are depths *below ground level*, not levels relative to
@@ -276,6 +288,16 @@ class Stratum(AgsRow):
     )
 
     @property
+    def material(self) -> Material:
+        """Rock, soil, or unknown, from the standard GEOL_LEG band.
+
+        Derived rather than stored: it is a reading of the legend code, not a
+        separate fact recorded in the file. Three states, because 996-999 and
+        any missing or non-standard code are neither rock nor soil.
+        """
+        return classify_legend(self.legend)
+
+    @property
     def thickness(self) -> float | None:
         """Layer thickness in metres, or None when the base was not recorded."""
         if self.base is None:
@@ -294,6 +316,111 @@ class Stratum(AgsRow):
                 message=f"base is above top {self.top}",
             )
         return self
+
+
+class Project(AgsRow):
+    """The single row of the AGS ``PROJ`` group: what this file is about."""
+
+    # AGS keys PROJ on PROJ_ID.
+    identity_fields: ClassVar[frozenset[str]] = frozenset({"project_id"})
+
+    project_id: str = Field(
+        alias="PROJ_ID",
+        min_length=1,
+        description="Project identifier.",
+    )
+    name: str | None = Field(default=None, alias="PROJ_NAME", description="Project title.")
+    location: str | None = Field(
+        default=None, alias="PROJ_LOC", description="Site location or address."
+    )
+    client: str | None = Field(default=None, alias="PROJ_CLNT", description="Client name.")
+    contractor: str | None = Field(
+        default=None, alias="PROJ_CONT", description="Investigation contractor."
+    )
+    engineer: str | None = Field(default=None, alias="PROJ_ENG", description="Consulting engineer.")
+    memo: str | None = Field(default=None, alias="PROJ_MEMO", description="General project memo.")
+
+
+class Sample(LocatedRow):
+    """One row of the AGS ``SAMP`` group: a sample taken from a hole."""
+
+    # AGS keys SAMP on the hole and the depth it was taken from. SAMP_REF and
+    # SAMP_TYPE further distinguish samples at the same depth, but they are text
+    # and effectively never fail to parse, so they are not identity for the
+    # purpose of deciding whether a row is salvageable.
+    identity_fields: ClassVar[frozenset[str]] = frozenset({"loca_id", "top"})
+
+    loca_id: str = Field(
+        alias="LOCA_ID",
+        min_length=1,
+        description="Identifier of the location this sample came from.",
+    )
+    top: float = Field(
+        alias="SAMP_TOP",
+        ge=0,
+        description="Depth to the top of the sample, below ground level, in metres.",
+    )
+    base: float | None = Field(
+        default=None,
+        alias="SAMP_BASE",
+        ge=0,
+        description="Depth to the base of the sample, below ground level, in metres.",
+    )
+    reference: str | None = Field(
+        default=None, alias="SAMP_REF", description="Sample reference within the hole."
+    )
+    sample_type: str | None = Field(
+        default=None,
+        alias="SAMP_TYPE",
+        description="Sample type, e.g. U (undisturbed), D (small disturbed), B (bulk).",
+    )
+    sample_id: str | None = Field(
+        default=None, alias="SAMP_ID", description="Globally unique sample identifier."
+    )
+    remarks: str | None = Field(default=None, alias="SAMP_REM", description="Sample remarks.")
+
+
+class InSituTest(LocatedRow):
+    """One row of the AGS ``ISPT`` group: a Standard Penetration Test.
+
+    ``seating_blows`` and ``main_blows`` are text, not numbers: AGS records them
+    as comma-separated increments such as "4,4,5,6". A driller writing "N/A"
+    there is not a type violation, because the column is declared as text.
+    """
+
+    identity_fields: ClassVar[frozenset[str]] = frozenset({"loca_id", "top"})
+
+    loca_id: str = Field(
+        alias="LOCA_ID",
+        min_length=1,
+        description="Identifier of the location this test was carried out in.",
+    )
+    top: float = Field(
+        alias="ISPT_TOP",
+        ge=0,
+        description="Depth of the test below ground level, in metres.",
+    )
+    seating_blows: str | None = Field(
+        default=None,
+        alias="ISPT_SEAT",
+        description="Blow counts for the seating increments, as recorded.",
+    )
+    main_blows: str | None = Field(
+        default=None,
+        alias="ISPT_MAIN",
+        description="Blow counts for the main test increments, as recorded.",
+    )
+    n_value: int | None = Field(
+        default=None,
+        alias="ISPT_NVAL",
+        ge=0,
+        description="SPT N value: total blows over the main increments.",
+    )
+    remarks: str | None = Field(
+        default=None,
+        alias="ISPT_REM",
+        description="Test remarks, e.g. why a test was aborted.",
+    )
 
 
 def record_warning(
