@@ -10,8 +10,16 @@ from rich.console import Console
 from rich.table import Table
 
 from ask_the_hole.dataset import Dataset, load_dataset
+from ask_the_hole.legend import Material
 from ask_the_hole.models import AgsRow, FieldWarning, InSituTest, Location, Sample, Stratum
 from ask_the_hole.parser import AgsError, RowError
+from ask_the_hole.queries import (
+    Datum,
+    LocationQuery,
+    describe_location,
+    find_locations_with_material,
+    find_spt_results,
+)
 
 app = typer.Typer(
     add_completion=False,
@@ -195,6 +203,137 @@ def summary(ags_file: AgsFileArgument) -> None:
 
     console.print(table)
     _report(data.warnings, data.errors)
+
+
+@app.command()
+def find(
+    ags_file: AgsFileArgument,
+    material: Annotated[
+        Material, typer.Option(help="Material to look for, classified from GEOL_LEG.")
+    ] = Material.ROCK,
+    above: Annotated[
+        float | None, typer.Option(help="Only above this figure (shallower, or higher level).")
+    ] = None,
+    below: Annotated[
+        float | None, typer.Option(help="Only below this figure (deeper, or lower level).")
+    ] = None,
+    datum: Annotated[
+        Datum, typer.Option(help="Measure against depth below ground, or level (mOD).")
+    ] = Datum.DEPTH,
+) -> None:
+    """Find locations that encountered a material, optionally within a depth band."""
+    data = _load(ags_file)
+    result = find_locations_with_material(data, material, above=above, below=below, datum=datum)
+    _print_query(result)
+
+
+@app.command()
+def describe(
+    ags_file: AgsFileArgument,
+    loca_id: Annotated[str, typer.Argument(help="Location identifier, e.g. BH01.")],
+) -> None:
+    """Print everything AGS_FILE records about one hole."""
+    data = _load(ags_file)
+    profile = describe_location(data, loca_id)
+
+    if profile is None:
+        known = ", ".join(sorted(data.locations.ids)) or "none"
+        errors_console.print(
+            f"[yellow]No location {loca_id!r} in {data.source.name}.[/yellow] Locations: {known}"
+        )
+        return
+
+    header = Table(box=box.SIMPLE_HEAD, pad_edge=False, show_header=False)
+    header.add_column("", style="bold", no_wrap=True)
+    header.add_column("")
+    header.add_row("LOCA_ID", profile.loca_id)
+    header.add_row("LOCA_TYPE", _cell(profile.location_type, numeric=False))
+    header.add_row("LOCA_GL", _cell(profile.ground_level, numeric=profile.ground_level is not None))
+    header.add_row("LOCA_FDEP", _cell(profile.final_depth, numeric=profile.final_depth is not None))
+    header.add_row("strata", str(len(profile.strata)))
+    header.add_row("samples", str(len(profile.samples)))
+    header.add_row("SPT tests", str(len(profile.spt)))
+    console.print(header)
+
+    if profile.strata:
+        log = Table(box=box.SIMPLE_HEAD, pad_edge=False, title="Log", title_justify="left")
+        log.add_column("GEOL_TOP", justify="right", no_wrap=True)
+        log.add_column("GEOL_BASE", justify="right", no_wrap=True)
+        log.add_column("level", justify="right", no_wrap=True)
+        log.add_column("material", no_wrap=True)
+        log.add_column("GEOL_DESC", overflow="ellipsis", no_wrap=True, max_width=52)
+        for stratum in profile.strata:
+            level = (
+                f"{profile.ground_level - stratum.top:.2f}"
+                if profile.ground_level is not None
+                else "-"
+            )
+            log.add_row(
+                f"{stratum.top:.2f}",
+                _cell(stratum.base, numeric=stratum.base is not None),
+                level,
+                stratum.material.value,
+                _cell(stratum.description, numeric=False),
+            )
+        console.print(log)
+
+    for note in profile.notes:
+        errors_console.print(f"[yellow]note:[/yellow] {note}")
+
+
+@app.command()
+def spt_results(
+    ags_file: AgsFileArgument,
+    min_n: Annotated[int | None, typer.Option(help="Minimum SPT N value.")] = None,
+    max_n: Annotated[int | None, typer.Option(help="Maximum SPT N value.")] = None,
+    above: Annotated[float | None, typer.Option(help="Only above this depth.")] = None,
+    below: Annotated[float | None, typer.Option(help="Only below this depth.")] = None,
+) -> None:
+    """Find SPT results matching an N-value range and depth band."""
+    data = _load(ags_file)
+    if not _require(data, "ISPT"):
+        return
+
+    results = find_spt_results(data, min_n=min_n, max_n=max_n, above=above, below=below)
+    console.print(
+        _build_table(
+            title=f"ISPT - {len(results)} matching tests",
+            model=InSituTest,
+            rows=results,
+            units=data.spt.units,
+            flexible="remarks",
+        )
+    )
+
+
+def _print_query(result: LocationQuery) -> None:
+    """Render a three-bucket answer, leading with what was actually established."""
+    console.print(f"[bold]{result.summary()}[/bold]")
+    console.print()
+
+    # A level query already quotes the level in its reason, so only add the
+    # conversion when the question was asked by depth.
+    show_level = result.datum is Datum.DEPTH
+
+    _print_bucket("matched", result.matched, "green", show_level=show_level)
+    _print_bucket("not matched", result.not_matched, "dim", show_level=False)
+    # Printed last and in warning colour: an undetermined location is the part
+    # of the answer most easily lost when someone skims, or summarises.
+    _print_bucket("undetermined", result.undetermined, "yellow", show_level=False)
+
+
+def _print_bucket(label: str, findings: list, colour: str, *, show_level: bool) -> None:
+    if not findings:
+        return
+    console.print(f"[{colour}]{label} ({len(findings)})[/{colour}]")
+    for finding in findings:
+        detail = f"  [bold]{finding.loca_id}[/bold]  {finding.reason}"
+        if show_level and finding.level is not None:
+            detail += f" = {finding.level:.2f}mOD"
+        console.print(detail)
+        if finding.description:
+            console.print(f"      [dim]{finding.description}[/dim]")
+    console.print()
 
 
 def _load(ags_file: Path) -> Dataset:

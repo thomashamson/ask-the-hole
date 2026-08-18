@@ -8,7 +8,8 @@ data file, using a local LLM with tool-calling. Runs fully offline.
 Parses all five groups — `PROJ`, `LOCA`, `GEOL`, `SAMP`, `ISPT` — into
 validated Pydantic models and prints them, decoding coded values through the
 file's own `ABBR` group and classifying strata as rock or soil from the standard
-`GEOL_LEG` bands. No LLM, no agent loop yet.
+`GEOL_LEG` bands, with a deterministic query layer over the result.
+No LLM, no agent loop yet.
 
 ## Requirements
 
@@ -30,6 +31,10 @@ uv run ask-the-hole locations path/to/file.ags   # LOCA: one row per hole
 uv run ask-the-hole strata    path/to/file.ags   # GEOL: one row per layer
 uv run ask-the-hole samples   path/to/file.ags   # SAMP
 uv run ask-the-hole spt       path/to/file.ags   # ISPT
+
+uv run ask-the-hole find     path/to/file.ags --material rock --above 5
+uv run ask-the-hole describe path/to/file.ags BH01
+uv run ask-the-hole spt-results path/to/file.ags --min-n 30
 ```
 
 ## Layout
@@ -92,6 +97,32 @@ The result has **three** states, not two. 996–999 is neither rock nor soil, an
 so is any absent or non-standard code — `Stratum.material` returns `unknown`
 rather than defaulting. Nothing in a file states that chalk is rock and glacial
 till is not; the band does.
+
+## Querying
+
+`queries.py` holds plain functions over a `Dataset` — the ones the LLM will
+later call as tools. They are built to be checkable without it: simple
+arguments in, structured results out, no exceptions for "nothing found".
+
+Every location-level answer has **three** buckets, because of an asymmetry:
+
+> A positive match is provable. A negative one is not.
+
+Finding rock in a hole settles the question. *Not* finding it only settles the
+question if every stratum in that hole carried a usable legend code — one
+unclassifiable stratum means the honest answer is "cannot tell", not "no". The
+same applies to a level question against a hole whose `LOCA_GL` was unusable:
+its depths are known, its levels are unknowable.
+
+`LocationQuery.is_complete` is False whenever anything is undetermined, and
+`summary()` then reports a **minimum rather than a total**.
+
+### Depth versus level
+
+`--datum depth` (the default) measures metres below ground; `--datum level`
+measures mOD. `above` and `below` name a **physical direction**, so the numeric
+comparison flips between them: above 5m depth is a *smaller* number, above 5mOD
+is a *larger* one. Bounds are exclusive.
 
 ## Test fixtures
 
